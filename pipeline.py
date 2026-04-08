@@ -4,12 +4,14 @@ Entry point for historical and incremental pipeline runs.
 """
 
 import argparse
+import json
 import logging
 import os
 import re
 import subprocess
+import sys
 import uuid
-from datetime import datetime
+from datetime import date as date_cls, datetime, timedelta
 
 import duckdb
 
@@ -355,15 +357,18 @@ def load_bronze_transactions(date: str, run_id: str) -> None:
 
 def check_silver_accounts_ready(processing_date: str) -> bool:
     """Return True if silver_accounts has a SUCCESS run completed after the most
-    recent bronze_accounts SUCCESS run for processing_date (INV-20).
+    recent bronze_accounts SUCCESS run (INV-20).
 
-    Returns False if either run is missing or silver_accounts predates bronze_accounts.
+    Comparison is by completed_at timestamp, not by calendar date — the pipeline
+    may process historical dates (e.g. 2024-01-01) on a different wall-clock date.
+    Returns False if either SUCCESS entry is missing or silver_accounts predates
+    bronze_accounts.
     """
     log = read_run_log()
     if not log:
         return False
 
-    # Most recent silver_accounts SUCCESS (any date — it's a single-file upsert)
+    # Most recent silver_accounts SUCCESS
     silver_acc_successes = [
         r for r in log
         if r["model_name"] == "silver_accounts" and r["status"] == "SUCCESS"
@@ -372,19 +377,23 @@ def check_silver_accounts_ready(processing_date: str) -> bool:
         return False
     latest_silver = max(silver_acc_successes, key=lambda r: r["completed_at"])
 
-    # Most recent bronze_accounts SUCCESS for processing_date specifically
-    # (matched by calendar date of started_at, since run_log has no processing_date col)
-    bronze_acc_for_date = [
+    # Most recent bronze_accounts SUCCESS (any date partition)
+    bronze_acc_successes = [
         r for r in log
-        if r["model_name"] == "bronze_accounts"
-        and r["status"] == "SUCCESS"
-        and str(r["started_at"])[:10] == processing_date
+        if r["model_name"] == "bronze_accounts" and r["status"] == "SUCCESS"
     ]
-    if not bronze_acc_for_date:
+    if not bronze_acc_successes:
         return False
-    latest_bronze = max(bronze_acc_for_date, key=lambda r: r["completed_at"])
+    latest_bronze = max(bronze_acc_successes, key=lambda r: r["completed_at"])
 
     return latest_silver["completed_at"] >= latest_bronze["completed_at"]
+
+
+def _sanitize_error_message(msg: str) -> str:
+    """Strip filesystem paths from error text before writing to run log."""
+    msg = re.sub(r'/\S+', '<path>', msg)
+    msg = re.sub(r'[A-Za-z]:\\\S+', '<path>', msg)
+    return msg[:500].strip()
 
 
 def run_dbt_model(model_name: str, run_id: str, vars: dict) -> bool:
@@ -418,9 +427,10 @@ def run_dbt_model(model_name: str, run_id: str, vars: dict) -> bool:
                 exist_ok=True,
             )
 
-        # Build dbt vars string: merge caller vars with run_id
+        # Build dbt vars string: merge caller vars with run_id.
+        # json.dumps produces valid JSON which dbt --vars accepts as YAML.
         all_vars = {**vars, "run_id": run_id}
-        vars_str = "{" + ", ".join(f"{k}: {v}" for k, v in all_vars.items()) + "}"
+        vars_str = json.dumps(all_vars)
 
         cmd = [
             "dbt", "run",
@@ -434,7 +444,8 @@ def run_dbt_model(model_name: str, run_id: str, vars: dict) -> bool:
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode != 0:
-            error_message = (result.stderr or result.stdout or "dbt exited non-zero").strip()
+            raw = (result.stderr or result.stdout or "dbt exited non-zero").strip()
+            error_message = _sanitize_error_message(raw)
             logger.error("dbt model failed (%s): %s", model_name, error_message)
             return False
 
@@ -443,14 +454,15 @@ def run_dbt_model(model_name: str, run_id: str, vars: dict) -> bool:
         return True
 
     except Exception as exc:
-        error_message = str(exc)
+        if error_message is None:
+            error_message = _sanitize_error_message(str(exc))
         logger.error("run_dbt_model error (%s): %s", model_name, exc)
         raise
     finally:
         # Rule 4 — write run log unconditionally, even on exception
         append_run_log({
             "run_id": run_id,
-            "pipeline_type": "HISTORICAL",
+            "pipeline_type": vars.get("pipeline_type", "INCREMENTAL"),
             "model_name": model_name,
             "layer": layer,
             "started_at": started_at,
@@ -468,13 +480,218 @@ def run_dbt_model(model_name: str, run_id: str, vars: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 def run_historical(start_date: str, end_date: str) -> None:
-    """Run the historical pipeline over the given date range."""
-    raise NotImplementedError("TODO: S7 — run_historical")
+    """Run the historical pipeline over [start_date, end_date] inclusive.
+
+    Execution order (enforced):
+      Before first date: bronze + silver transaction_codes (idempotent skip if
+      run log already has SUCCESS for silver_transaction_codes).
+
+      Per date:
+        1. load_bronze_accounts      (internal idempotency — row count check)
+        2. load_bronze_transactions  (internal idempotency — row count check)
+        3. run_dbt_model silver_accounts
+        4. run_dbt_model silver_transactions  (INV-20 guard enforced inside)
+        5. run_dbt_model silver_quarantine
+
+      Dates where Bronze transactions partition is absent are skipped (INV-18).
+      Dates where Silver transactions partition already exists are skipped (INV-10).
+      If any Silver layer fails for a date: log, continue to next date, set failure flag.
+
+      After all dates (only if no Silver failures):
+        6. run_dbt_model gold_daily_summary
+        7. run_dbt_model gold_weekly_account_summary
+
+    Watermark advances to end_date only after Gold completes successfully and no
+    Silver failures were recorded (INV-02, INV-03).
+    Missing source file skips are not failures (INV-18).
+    """
+    run_id = generate_run_id()
+    logger.info("Historical run %s: %s → %s", run_id, start_date, end_date)
+
+    pipeline_vars = {"pipeline_type": "HISTORICAL"}
+    any_silver_failure = False
+
+    # ------------------------------------------------------------------
+    # Transaction codes — once before any date (idempotent)
+    # ------------------------------------------------------------------
+    tc_already_ok = any(
+        r["model_name"] == "silver_transaction_codes" and r["status"] == "SUCCESS"
+        for r in read_run_log()
+    )
+    if tc_already_ok:
+        logger.info("silver_transaction_codes already succeeded — skipping")
+    else:
+        load_bronze_transaction_codes(run_id)
+        if not run_dbt_model("silver_transaction_codes", run_id, pipeline_vars):
+            logger.error("silver_transaction_codes failed — aborting historical run")
+            return
+
+    # ------------------------------------------------------------------
+    # Per-date loop
+    # ------------------------------------------------------------------
+    current = date_cls.fromisoformat(start_date)
+    end = date_cls.fromisoformat(end_date)
+
+    while current <= end:
+        processing_date = current.isoformat()
+        current += timedelta(days=1)
+
+        logger.info("Processing date: %s", processing_date)
+        date_vars = {**pipeline_vars, "processing_date": processing_date}
+
+        # Bronze (internal idempotency via row count check)
+        load_bronze_accounts(processing_date, run_id)
+        load_bronze_transactions(processing_date, run_id)
+
+        # If Bronze transactions partition is absent, source file was missing — skip (INV-18)
+        bronze_txn_path = os.path.join(
+            DATA_DIR, "bronze", "transactions", f"date={processing_date}", "data.parquet"
+        )
+        if not os.path.exists(bronze_txn_path):
+            logger.info(
+                "Bronze transactions absent for %s — skipping date (INV-18)", processing_date
+            )
+            continue
+
+        # Silver transactions partition already exists — date fully processed, skip (INV-10)
+        silver_txn_path = os.path.join(
+            DATA_DIR, "silver", "transactions", f"date={processing_date}", "data.parquet"
+        )
+        if os.path.exists(silver_txn_path):
+            logger.info(
+                "Silver transactions partition exists for %s — skipping (idempotent)",
+                processing_date,
+            )
+            continue
+
+        # Silver accounts (must precede silver_transactions — INV-20)
+        if not run_dbt_model("silver_accounts", run_id, date_vars):
+            logger.error("silver_accounts failed for %s", processing_date)
+            any_silver_failure = True
+            continue
+
+        # Silver transactions
+        if not run_dbt_model("silver_transactions", run_id, date_vars):
+            logger.error("silver_transactions failed for %s", processing_date)
+            any_silver_failure = True
+            continue
+
+        # Silver quarantine — non-critical; failure logged but does not block watermark
+        run_dbt_model("silver_quarantine", run_id, date_vars)
+
+    # ------------------------------------------------------------------
+    # Gold — only after all dates complete without Silver failures
+    # ------------------------------------------------------------------
+    if any_silver_failure:
+        logger.warning(
+            "Silver failures detected — skipping Gold and watermark advance (INV-02)"
+        )
+        return
+
+    gold_ok = run_dbt_model("gold_daily_summary", run_id, pipeline_vars) and \
+              run_dbt_model("gold_weekly_account_summary", run_id, pipeline_vars)
+
+    if gold_ok:
+        write_control_table(end_date, run_id)
+        logger.info("Watermark advanced to %s", end_date)
+    else:
+        logger.error("Gold layer failed — watermark not advanced (INV-02)")
 
 
 def run_incremental() -> None:
-    """Run the incremental pipeline for the next unprocessed date."""
-    raise NotImplementedError("TODO: S7 — run_incremental")
+    """Run the incremental pipeline for the next unprocessed date.
+
+    Reads the watermark from the control table and processes watermark + 1 day.
+
+    Behaviour:
+      - If control table absent (historical never run): raises RuntimeError (TC-5).
+      - If neither source CSV exists for next_date: exits cleanly, no watermark
+        change (INV-18).
+      - If Silver transactions partition already exists for next_date: skips all
+        layers and returns (idempotency — INV-10).
+      - Execution order:
+          1. load_bronze_accounts
+          2. load_bronze_transactions
+          3. silver_accounts   (INV-20 guard enforced inside run_dbt_model)
+          4. silver_transactions
+          5. silver_quarantine (non-critical)
+          6. gold_daily_summary
+          7. gold_weekly_account_summary
+      - Any Silver or Gold failure: logs error, exits with code 1 without advancing
+        watermark (INV-02).
+      - On full success: write_control_table(next_date) — watermark advances by
+        exactly one day (INV-01).
+    """
+    run_id = generate_run_id()
+    logger.info("Incremental run %s", run_id)
+
+    # Require historical to have run first (TC-5)
+    ctrl = load_control_table()
+    if ctrl is None:
+        raise RuntimeError(
+            "Incremental pipeline requires historical pipeline to have run first."
+        )
+
+    last_date = date_cls.fromisoformat(str(ctrl["last_processed_date"])[:10])
+    next_date = (last_date + timedelta(days=1)).isoformat()
+    logger.info("Next date to process: %s", next_date)
+
+    pipeline_vars = {"pipeline_type": "INCREMENTAL"}
+    date_vars = {**pipeline_vars, "processing_date": next_date}
+
+    # If neither source file exists, nothing to do — exit cleanly (INV-18)
+    txn_source = os.path.join(SOURCE_DIR, f"transactions_{next_date}.csv")
+    acc_source = os.path.join(SOURCE_DIR, f"accounts_{next_date}.csv")
+    if not os.path.exists(txn_source) and not os.path.exists(acc_source):
+        logger.info("No source files for %s — nothing to process (INV-18)", next_date)
+        return
+
+    # Silver transactions partition already exists — date already processed (INV-10)
+    silver_txn_path = os.path.join(
+        DATA_DIR, "silver", "transactions", f"date={next_date}", "data.parquet"
+    )
+    if os.path.exists(silver_txn_path):
+        logger.info(
+            "Silver transactions partition already exists for %s — skipping (INV-10)",
+            next_date,
+        )
+        return
+
+    # Bronze (internal idempotency via row count check)
+    load_bronze_accounts(next_date, run_id)
+    load_bronze_transactions(next_date, run_id)
+
+    # Silver accounts (must precede silver_transactions — INV-20)
+    if not run_dbt_model("silver_accounts", run_id, date_vars):
+        logger.error(
+            "silver_accounts failed for %s — watermark not advanced (INV-02)", next_date
+        )
+        sys.exit(1)
+
+    # Silver transactions
+    if not run_dbt_model("silver_transactions", run_id, date_vars):
+        logger.error(
+            "silver_transactions failed for %s — watermark not advanced (INV-02)", next_date
+        )
+        sys.exit(1)
+
+    # Silver quarantine (non-critical — failure does not block watermark)
+    run_dbt_model("silver_quarantine", run_id, date_vars)
+
+    # Gold
+    gold_ok = (
+        run_dbt_model("gold_daily_summary", run_id, pipeline_vars)
+        and run_dbt_model("gold_weekly_account_summary", run_id, pipeline_vars)
+    )
+    if not gold_ok:
+        logger.error(
+            "Gold layer failed for %s — watermark not advanced (INV-02)", next_date
+        )
+        sys.exit(1)
+
+    # Advance watermark by exactly one day (INV-01, INV-02, INV-03)
+    write_control_table(next_date, run_id)
+    logger.info("Watermark advanced to %s", next_date)
 
 
 # ---------------------------------------------------------------------------
