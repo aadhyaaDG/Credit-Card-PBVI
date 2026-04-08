@@ -208,19 +208,144 @@ def read_run_log() -> list:
 # Bronze loaders
 # ---------------------------------------------------------------------------
 
-def load_bronze_transactions(date: str, run_id: str) -> None:
-    """Load transactions CSV for the given date into Bronze."""
-    raise NotImplementedError("TODO: S3 — load_bronze_transactions")
+def _bronze_load_csv(
+    source_path: str,
+    output_path: str,
+    model_name: str,
+    run_id: str,
+    source_filename: str,
+    check_missing: bool = True,
+) -> None:
+    """Shared implementation for all three Bronze CSV loaders.
 
+    Enforces: INV-04 (never writes to source), INV-05 (source fields as-is),
+    INV-10 (idempotency via row count check), INV-11 (audit columns non-null),
+    Rule 4 (try/finally run log), Rule 5 (corrupt parquet guard).
+    """
+    started_at = datetime.utcnow().isoformat()
+    status = "FAILED"
+    error_message = None
+    records_processed = None
+    records_written = None
 
-def load_bronze_accounts(date: str, run_id: str) -> None:
-    """Load accounts CSV for the given date into Bronze."""
-    raise NotImplementedError("TODO: S3 — load_bronze_accounts")
+    try:
+        # Missing source file — SKIPPED (INV-18 for date-partitioned loaders)
+        if check_missing and not os.path.exists(source_path):
+            logger.info("Source file absent — skipping: %s", source_path)
+            status = "SKIPPED"
+            return
+
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        con = duckdb.connect()
+
+        # Source row count (INV-05 — read only, never modify)
+        src_count = con.execute(
+            f"SELECT COUNT(*) FROM read_csv_auto('{source_path}')"
+        ).fetchone()[0]
+        records_processed = src_count
+
+        # Idempotency check (INV-10)
+        if os.path.exists(output_path):
+            try:
+                existing_count = con.execute(
+                    f"SELECT COUNT(*) FROM read_parquet('{output_path}')"
+                ).fetchone()[0]
+            except Exception as exc:
+                # Rule 5 — corrupt parquet: treat as mismatch, delete and rewrite
+                logger.warning(
+                    "Existing parquet unreadable at %s — will rewrite: %s",
+                    output_path, exc,
+                )
+                os.remove(output_path)
+                existing_count = -1
+
+            if existing_count == src_count:
+                logger.info(
+                    "Bronze idempotent skip: %s (%d rows match)", output_path, existing_count
+                )
+                status = "SKIPPED"
+                records_written = 0
+                return
+
+            # Row count mismatch — delete and rewrite
+            logger.warning(
+                "Row count mismatch at %s (expected %d, found %d) — rewriting",
+                output_path, src_count, existing_count,
+            )
+            os.remove(output_path)
+
+        # Write: source fields as-is + audit columns (INV-05, INV-11)
+        con.execute("""
+            CREATE OR REPLACE TEMP TABLE _bronze AS
+            SELECT
+                *,
+                ?            AS _source_file,
+                NOW()::TIMESTAMP AS _ingested_at,
+                ?            AS _pipeline_run_id
+            FROM read_csv_auto(?)
+        """, [source_filename, run_id, source_path])
+        con.execute(f"COPY (SELECT * FROM _bronze) TO '{output_path}' (FORMAT PARQUET)")
+        con.close()
+
+        records_written = src_count
+        status = "SUCCESS"
+        logger.info("Bronze written: %s (%d rows)", output_path, records_written)
+
+    except Exception as exc:
+        error_message = str(exc)
+        logger.error("Bronze loader failed (%s): %s", model_name, exc)
+        raise
+    finally:
+        # Rule 4 — write run log unconditionally, even on exception
+        append_run_log({
+            "run_id": run_id,
+            "pipeline_type": "HISTORICAL",
+            "model_name": model_name,
+            "layer": "BRONZE",
+            "started_at": started_at,
+            "completed_at": datetime.utcnow().isoformat(),
+            "status": status,
+            "records_processed": records_processed,
+            "records_written": records_written,
+            "records_rejected": None,
+            "error_message": error_message,
+        })
 
 
 def load_bronze_transaction_codes(run_id: str) -> None:
-    """Load transaction_codes CSV into Bronze."""
-    raise NotImplementedError("TODO: S3 — load_bronze_transaction_codes")
+    """Load transaction_codes.csv into data/bronze/transaction_codes/data.parquet."""
+    _bronze_load_csv(
+        source_path=os.path.join(SOURCE_DIR, "transaction_codes.csv"),
+        output_path=os.path.join(DATA_DIR, "bronze", "transaction_codes", "data.parquet"),
+        model_name="bronze_transaction_codes",
+        run_id=run_id,
+        source_filename="transaction_codes.csv",
+        check_missing=False,
+    )
+
+
+def load_bronze_accounts(date: str, run_id: str) -> None:
+    """Load accounts_{date}.csv into data/bronze/accounts/date={date}/data.parquet."""
+    _bronze_load_csv(
+        source_path=os.path.join(SOURCE_DIR, f"accounts_{date}.csv"),
+        output_path=os.path.join(DATA_DIR, "bronze", "accounts", f"date={date}", "data.parquet"),
+        model_name="bronze_accounts",
+        run_id=run_id,
+        source_filename=f"accounts_{date}.csv",
+        check_missing=True,
+    )
+
+
+def load_bronze_transactions(date: str, run_id: str) -> None:
+    """Load transactions_{date}.csv into data/bronze/transactions/date={date}/data.parquet."""
+    _bronze_load_csv(
+        source_path=os.path.join(SOURCE_DIR, f"transactions_{date}.csv"),
+        output_path=os.path.join(DATA_DIR, "bronze", "transactions", f"date={date}", "data.parquet"),
+        model_name="bronze_transactions",
+        run_id=run_id,
+        source_filename=f"transactions_{date}.csv",
+        check_missing=True,
+    )
 
 
 # ---------------------------------------------------------------------------
