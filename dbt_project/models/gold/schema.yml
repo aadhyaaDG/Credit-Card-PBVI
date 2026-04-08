@@ -1,0 +1,5 @@
+version: 2
+
+models:
+  - name: gold_daily_summary
+  - name: gold_weekly_account_summary
