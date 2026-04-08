@@ -7,7 +7,7 @@
 | Engineer | Aadhya Subhash |
 | Branch | session/s02_pipeline_control |
 | Execution Mode | Autonomous |
-| Status | IN PROGRESS |
+| Status | COMPLETE — integration check deferred (Docker) |
 
 ---
 
@@ -15,9 +15,9 @@
 
 | Task ID | Task Name | Status | Commit |
 |---|---|---|---|
-| T2.1 | Run ID Generator | | |
-| T2.2 | Run Log Helpers | | |
-| T2.3 | Control Table Helpers | | |
+| T2.1 | Run ID Generator | COMPLETE — verification deferred (Docker) | 7332c76 |
+| T2.2 | Run Log Helpers | COMPLETE — verification deferred (Docker) | e0b64ea |
+| T2.3 | Control Table Helpers | COMPLETE — verification deferred (Docker) | 394664f |
 
 ---
 
