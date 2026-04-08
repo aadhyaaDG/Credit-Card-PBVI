@@ -7,6 +7,7 @@ import argparse
 import logging
 import os
 import re
+import subprocess
 import uuid
 from datetime import datetime
 
@@ -352,9 +353,114 @@ def load_bronze_transactions(date: str, run_id: str) -> None:
 # dbt runner
 # ---------------------------------------------------------------------------
 
+def check_silver_accounts_ready(processing_date: str) -> bool:
+    """Return True if silver_accounts has a SUCCESS run completed after the most
+    recent bronze_accounts SUCCESS run for processing_date (INV-20).
+
+    Returns False if either run is missing or silver_accounts predates bronze_accounts.
+    """
+    log = read_run_log()
+    if not log:
+        return False
+
+    # Most recent silver_accounts SUCCESS (any date — it's a single-file upsert)
+    silver_acc_successes = [
+        r for r in log
+        if r["model_name"] == "silver_accounts" and r["status"] == "SUCCESS"
+    ]
+    if not silver_acc_successes:
+        return False
+    latest_silver = max(silver_acc_successes, key=lambda r: r["completed_at"])
+
+    # Most recent bronze_accounts SUCCESS for processing_date specifically
+    # (matched by calendar date of started_at, since run_log has no processing_date col)
+    bronze_acc_for_date = [
+        r for r in log
+        if r["model_name"] == "bronze_accounts"
+        and r["status"] == "SUCCESS"
+        and str(r["started_at"])[:10] == processing_date
+    ]
+    if not bronze_acc_for_date:
+        return False
+    latest_bronze = max(bronze_acc_for_date, key=lambda r: r["completed_at"])
+
+    return latest_silver["completed_at"] >= latest_bronze["completed_at"]
+
+
 def run_dbt_model(model_name: str, run_id: str, vars: dict) -> bool:
-    """Run a single dbt model. Returns True on success, False on failure."""
-    raise NotImplementedError("TODO: S4/S5/S6 — run_dbt_model")
+    """Run a single dbt model via the dbt CLI.
+
+    Returns True on success, False on failure.
+    Writes a run log entry unconditionally (Rule 4).
+    Enforces INV-20 guard when model_name == 'silver_transactions'.
+    """
+    started_at = datetime.utcnow().isoformat()
+    status = "FAILED"
+    error_message = None
+    layer = "GOLD" if model_name.startswith("gold_") else "SILVER"
+
+    try:
+        # INV-20 — silver_accounts must be current before silver_transactions runs
+        if model_name == "silver_transactions":
+            processing_date = vars.get("processing_date")
+            if not check_silver_accounts_ready(processing_date):
+                error_message = (
+                    f"silver_accounts not current for {processing_date} — run aborted"
+                )
+                logger.error(error_message)
+                raise RuntimeError(error_message)
+
+        # Ensure quarantine partition directory exists (DuckDB COPY TO requires it)
+        processing_date = vars.get("processing_date")
+        if processing_date and model_name in ("silver_transactions", "silver_accounts"):
+            os.makedirs(
+                os.path.join(DATA_DIR, "silver", "quarantine", f"date={processing_date}"),
+                exist_ok=True,
+            )
+
+        # Build dbt vars string: merge caller vars with run_id
+        all_vars = {**vars, "run_id": run_id}
+        vars_str = "{" + ", ".join(f"{k}: {v}" for k, v in all_vars.items()) + "}"
+
+        cmd = [
+            "dbt", "run",
+            "--select", model_name,
+            "--vars", vars_str,
+            "--profiles-dir", DBT_PROFILES_DIR,
+            "--project-dir", DBT_PROFILES_DIR,
+        ]
+        logger.info("dbt run: model=%s vars=%s", model_name, vars_str)
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            error_message = (result.stderr or result.stdout or "dbt exited non-zero").strip()
+            logger.error("dbt model failed (%s): %s", model_name, error_message)
+            return False
+
+        status = "SUCCESS"
+        logger.info("dbt model succeeded: %s", model_name)
+        return True
+
+    except Exception as exc:
+        error_message = str(exc)
+        logger.error("run_dbt_model error (%s): %s", model_name, exc)
+        raise
+    finally:
+        # Rule 4 — write run log unconditionally, even on exception
+        append_run_log({
+            "run_id": run_id,
+            "pipeline_type": "HISTORICAL",
+            "model_name": model_name,
+            "layer": layer,
+            "started_at": started_at,
+            "completed_at": datetime.utcnow().isoformat(),
+            "status": status,
+            "records_processed": None,
+            "records_written": None,
+            "records_rejected": None,
+            "error_message": error_message,
+        })
 
 
 # ---------------------------------------------------------------------------

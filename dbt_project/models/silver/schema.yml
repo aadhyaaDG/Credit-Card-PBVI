@@ -59,4 +59,18 @@ models:
           - not_null
 
   - name: silver_transactions
+    columns:
+      - name: transaction_id
+        tests:
+          - not_null
+      - name: _signed_amount
+        tests:
+          - not_null
+      - name: _pipeline_run_id
+        tests:
+          - not_null
+      - name: _is_resolvable
+        tests:
+          - not_null
+
   - name: silver_quarantine
