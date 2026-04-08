@@ -66,13 +66,51 @@ def _row_to_dict(description, row) -> dict:
 # ---------------------------------------------------------------------------
 
 def load_control_table() -> dict:
-    """Read control.parquet and return its contents as a dict."""
-    raise NotImplementedError("TODO: S2 — load_control_table")
+    """Return the single control table row as a dict, or None if file absent.
+
+    Raises ValueError if the file contains more than one row.
+    """
+    path = _control_path()
+    if not os.path.exists(path):
+        return None
+
+    con = duckdb.connect()
+    try:
+        result = con.execute(f"SELECT * FROM read_parquet('{path}')")
+        description = result.description
+        rows = result.fetchall()
+    finally:
+        con.close()
+
+    if len(rows) > 1:
+        raise ValueError(f"Control table has {len(rows)} rows — expected exactly 1")
+
+    return _row_to_dict(description, rows[0]) if rows else None
 
 
 def write_control_table(date: str, run_id: str) -> None:
-    """Write (overwrite) control.parquet with the given date and run_id."""
-    raise NotImplementedError("TODO: S2 — write_control_table")
+    """Overwrite control.parquet with a single row for the given date and run_id.
+
+    Raises ValueError if date is not a valid YYYY-MM-DD string.
+    """
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        raise ValueError(f"Invalid date format '{date}' — expected YYYY-MM-DD")
+
+    path = _control_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    con = duckdb.connect()
+    try:
+        con.execute("""
+            CREATE TEMP TABLE _ctrl AS
+            SELECT
+                ?::DATE      AS last_processed_date,
+                NOW()        AS updated_at,
+                ?            AS updated_by_run_id
+        """, [date, run_id])
+        con.execute(f"COPY (SELECT * FROM _ctrl) TO '{path}' (FORMAT PARQUET)")
+    finally:
+        con.close()
 
 
 # ---------------------------------------------------------------------------
