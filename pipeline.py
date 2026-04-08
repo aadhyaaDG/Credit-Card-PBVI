@@ -6,8 +6,11 @@ Entry point for historical and incremental pipeline runs.
 import argparse
 import logging
 import os
+import re
 import uuid
 from datetime import datetime
+
+import duckdb
 
 from dotenv import load_dotenv
 
@@ -37,6 +40,28 @@ def generate_run_id() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Internal path helpers
+# ---------------------------------------------------------------------------
+
+def _run_log_path() -> str:
+    return os.path.join(DATA_DIR, "pipeline", "run_log.parquet")
+
+
+def _control_path() -> str:
+    return os.path.join(DATA_DIR, "pipeline", "control.parquet")
+
+
+def _row_to_dict(description, row) -> dict:
+    """Convert a DuckDB result row to a dict, serialising date/datetime to ISO strings."""
+    result = {}
+    for (col, *_), val in zip(description, row):
+        if hasattr(val, "isoformat"):
+            val = val.isoformat()
+        result[col] = val
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Control table
 # ---------------------------------------------------------------------------
 
@@ -54,14 +79,91 @@ def write_control_table(date: str, run_id: str) -> None:
 # Run log
 # ---------------------------------------------------------------------------
 
+_RUN_LOG_REQUIRED = frozenset([
+    "run_id", "pipeline_type", "model_name", "layer",
+    "started_at", "completed_at", "status",
+])
+
+
 def append_run_log(row: dict) -> None:
-    """Append a single row to run_log.parquet (append-only)."""
-    raise NotImplementedError("TODO: S2 — append_run_log")
+    """Append a single row to run_log.parquet (append-only).
+
+    Raises ValueError if any required field is null.
+    If the existing file is corrupt (Rule 5), logs a WARNING and starts fresh.
+    """
+    for field in _RUN_LOG_REQUIRED:
+        if row.get(field) is None:
+            raise ValueError(f"Required run log field '{field}' is null")
+
+    path = _run_log_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    con = duckdb.connect()
+    try:
+        con.execute("""
+            CREATE TEMP TABLE _new_row AS
+            SELECT
+                ?        AS run_id,
+                ?        AS pipeline_type,
+                ?        AS model_name,
+                ?        AS layer,
+                ?::TIMESTAMP AS started_at,
+                ?::TIMESTAMP AS completed_at,
+                ?        AS status,
+                ?::INTEGER   AS records_processed,
+                ?::INTEGER   AS records_written,
+                ?::INTEGER   AS records_rejected,
+                ?        AS error_message
+        """, [
+            row["run_id"], row["pipeline_type"], row["model_name"], row["layer"],
+            str(row["started_at"]), str(row["completed_at"]), row["status"],
+            row.get("records_processed"), row.get("records_written"),
+            row.get("records_rejected"), row.get("error_message"),
+        ])
+
+        if os.path.exists(path):
+            try:
+                con.execute(f"""
+                    COPY (
+                        SELECT * FROM read_parquet('{path}')
+                        UNION ALL
+                        SELECT * FROM _new_row
+                    ) TO '{path}' (FORMAT PARQUET)
+                """)
+            except Exception as exc:
+                logger.warning("run_log.parquet unreadable — starting fresh: %s", exc)
+                os.remove(path)
+                con.execute(f"COPY (SELECT * FROM _new_row) TO '{path}' (FORMAT PARQUET)")
+        else:
+            con.execute(f"COPY (SELECT * FROM _new_row) TO '{path}' (FORMAT PARQUET)")
+    finally:
+        con.close()
 
 
 def read_run_log() -> list:
-    """Return all rows from run_log.parquet as a list of dicts."""
-    raise NotImplementedError("TODO: S2 — read_run_log")
+    """Return all rows from run_log.parquet sorted by started_at ascending.
+
+    Returns an empty list if the file does not exist.
+    """
+    path = _run_log_path()
+    if not os.path.exists(path):
+        return []
+
+    con = duckdb.connect()
+    try:
+        result = con.execute(f"""
+            SELECT * FROM read_parquet('{path}')
+            ORDER BY started_at ASC
+        """)
+        description = result.description
+        rows = result.fetchall()
+    except Exception as exc:
+        logger.warning("run_log.parquet unreadable — returning empty list: %s", exc)
+        return []
+    finally:
+        con.close()
+
+    return [_row_to_dict(description, r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
