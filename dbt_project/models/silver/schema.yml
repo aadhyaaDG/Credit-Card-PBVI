@@ -39,6 +39,24 @@ sources:
 
 models:
   - name: silver_transaction_codes
+    columns:
+      - name: transaction_code
+        tests:
+          - not_null
+          - unique
+      - name: _pipeline_run_id
+        tests:
+          - not_null
+
   - name: silver_accounts
+    columns:
+      - name: account_id
+        tests:
+          - not_null
+          - unique
+      - name: _pipeline_run_id
+        tests:
+          - not_null
+
   - name: silver_transactions
   - name: silver_quarantine
