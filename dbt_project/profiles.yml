@@ -1,0 +1,6 @@
+cc_transactions_lake:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: /app/data/cc_lake.duckdb

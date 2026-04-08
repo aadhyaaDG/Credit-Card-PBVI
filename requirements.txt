@@ -1,4 +1,4 @@
 dbt-core==1.7.*
 dbt-duckdb==1.7.*
 duckdb
-pandas
+python-dotenv

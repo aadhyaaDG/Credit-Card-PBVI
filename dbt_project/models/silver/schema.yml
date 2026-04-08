@@ -1,0 +1,44 @@
+version: 2
+
+sources:
+  - name: bronze_transactions
+    meta:
+      external_location: /app/data/bronze/transactions/
+    tables:
+      - name: bronze_transactions
+
+  - name: bronze_accounts
+    meta:
+      external_location: /app/data/bronze/accounts/
+    tables:
+      - name: bronze_accounts
+
+  - name: bronze_transaction_codes
+    meta:
+      external_location: /app/data/bronze/transaction_codes/
+    tables:
+      - name: bronze_transaction_codes
+
+  - name: silver_transactions
+    meta:
+      external_location: /app/data/silver/transactions/
+    tables:
+      - name: silver_transactions
+
+  - name: silver_accounts
+    meta:
+      external_location: /app/data/silver/accounts/
+    tables:
+      - name: silver_accounts
+
+  - name: silver_transaction_codes
+    meta:
+      external_location: /app/data/silver/transaction_codes/
+    tables:
+      - name: silver_transaction_codes
+
+models:
+  - name: silver_transaction_codes
+  - name: silver_accounts
+  - name: silver_transactions
+  - name: silver_quarantine
