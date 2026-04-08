@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git checkout:*)",
+      "Bash(docker compose:*)",
+      "Bash(sudo service:*)",
+      "Bash(docker info:*)",
+      "Bash(echo $DOCKER_HOST)",
+      "Read(//home/oel/.docker/**)",
+      "Read(//run/**)",
+      "Read(//tmp/**)",
+      "Bash(which docker:*)",
+      "Bash(git:*)"
+    ]
+  }
+}

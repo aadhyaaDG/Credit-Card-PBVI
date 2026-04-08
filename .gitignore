@@ -1,0 +1,19 @@
+# Data layer — never commit Parquet outputs or DuckDB files
+data/
+!data/**/.gitkeep
+*.duckdb
+*.duckdb.wal
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+
+# Docker
+.env
+
+# OS
+.DS_Store
+Thumbs.db
