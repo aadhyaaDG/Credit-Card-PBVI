@@ -32,7 +32,7 @@ logger = logging.getLogger("pipeline")
 def generate_run_id() -> str:
     """Format: YYYYMMDD_<first-8-chars-of-uuid4>"""
     date_part = datetime.today().strftime("%Y%m%d")
-    uuid_part = str(uuid.uuid4()).replace("-", "")[:8]
+    uuid_part = str(uuid.uuid4()).replace("-", "").lower()[:8]
     return f"{date_part}_{uuid_part}"
 
 
