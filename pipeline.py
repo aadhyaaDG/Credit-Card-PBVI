@@ -6,6 +6,8 @@ Entry point for historical and incremental pipeline runs.
 import argparse
 import logging
 import os
+import uuid
+from datetime import datetime
 
 from dotenv import load_dotenv
 
@@ -29,7 +31,9 @@ logger = logging.getLogger("pipeline")
 
 def generate_run_id() -> str:
     """Format: YYYYMMDD_<first-8-chars-of-uuid4>"""
-    raise NotImplementedError("TODO: S2 — generate_run_id")
+    date_part = datetime.today().strftime("%Y%m%d")
+    uuid_part = str(uuid.uuid4()).replace("-", "")[:8]
+    return f"{date_part}_{uuid_part}"
 
 
 # ---------------------------------------------------------------------------
