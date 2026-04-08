@@ -2,4 +2,23 @@ version: 2
 
 models:
   - name: gold_daily_summary
+    columns:
+      - name: transaction_date
+        tests:
+          - not_null
+          - unique
+      - name: _pipeline_run_id
+        tests:
+          - not_null
+
   - name: gold_weekly_account_summary
+    columns:
+      - name: account_id
+        tests:
+          - not_null
+      - name: week_start_date
+        tests:
+          - not_null
+      - name: _pipeline_run_id
+        tests:
+          - not_null

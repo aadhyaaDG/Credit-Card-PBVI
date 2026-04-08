@@ -182,13 +182,27 @@ ORDER BY s.transaction_id;
 
 
 -- ----------------------------------------------------------------------------
--- Query 10: TODO — No record with _is_resolvable = false appears in Gold output (INV-17)
--- Implemented in S6 once Gold models are in place.
--- Expected: Zero rows returned. Any row means an unresolvable record reached Gold.
+-- Query 10: No record with _is_resolvable = false contributed to Gold output (INV-17)
+-- Gold is aggregated — checked via count reconciliation: gold_daily_summary.total_transactions
+-- must equal the resolvable-only count from Silver per date.
+-- Expected: Zero rows returned. Any row means Gold counts exceed resolvable Silver counts.
 -- ----------------------------------------------------------------------------
--- SELECT g.transaction_id
--- FROM read_parquet('/app/data/gold/daily_summary/data.parquet') g
--- JOIN read_parquet('/app/data/silver/transactions/**/data.parquet', hive_partitioning=true) s
---   ON g.transaction_id = s.transaction_id
--- WHERE s._is_resolvable = false;
--- TODO: uncomment and finalise in S6
+SELECT
+    g.transaction_date,
+    g.total_transactions                                     AS gold_count,
+    COALESCE(s.resolvable_count, 0)                         AS silver_resolvable_count,
+    g.total_transactions - COALESCE(s.resolvable_count, 0)  AS delta
+FROM read_parquet('/app/data/gold/daily_summary/data.parquet') g
+LEFT JOIN (
+    SELECT
+        transaction_date::DATE  AS transaction_date,
+        COUNT(*)                AS resolvable_count
+    FROM read_parquet(
+        '/app/data/silver/transactions/**/data.parquet',
+        hive_partitioning=true
+    )
+    WHERE _is_resolvable = true
+    GROUP BY transaction_date::DATE
+) s ON g.transaction_date = s.transaction_date
+WHERE g.total_transactions != COALESCE(s.resolvable_count, 0)
+ORDER BY g.transaction_date;
