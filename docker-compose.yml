@@ -9,4 +9,5 @@ services:
       - ./data:/app/data
       - ./dbt_project:/app/dbt_project
       - ./pipeline.py:/app/pipeline.py
+      - ./verification:/app/verification
     command: python pipeline.py --help

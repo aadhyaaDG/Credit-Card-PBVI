@@ -1,5 +1,10 @@
 {{
-    config(materialized='table')
+    config(
+        materialized='table',
+        post_hook=[
+            "COPY (SELECT * FROM {{ this }}) TO '/app/data/silver/transaction_codes/data.parquet' (FORMAT PARQUET)"
+        ]
+    )
 }}
 
 SELECT

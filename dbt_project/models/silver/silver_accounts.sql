@@ -1,16 +1,9 @@
 {{
-    config(materialized='table',
-           pre_hook=[
-               "CREATE TABLE IF NOT EXISTS {{ this }} AS
-                SELECT
-                    * EXCLUDE (_ingested_at, _pipeline_run_id),
-                    _ingested_at::TIMESTAMP  AS _bronze_ingested_at,
-                    ''::VARCHAR              AS _pipeline_run_id,
-                    NOW()::TIMESTAMP         AS _record_valid_from
-                FROM read_parquet('/app/data/bronze/accounts/date={{ var(\"processing_date\") }}/data.parquet')
-                WHERE 1=0"
-           ],
-           post_hook=[
+    config(
+        materialized='incremental',
+        unique_key='account_id',
+        incremental_strategy='delete+insert',
+        post_hook=[
                "COPY (
                     SELECT
                         * EXCLUDE (_ingested_at, _pipeline_run_id),
@@ -67,12 +60,6 @@ passing AS (
       AND account_status IN ('ACTIVE', 'SUSPENDED', 'CLOSED')
 )
 
--- Upsert: keep existing Silver rows whose account_id is NOT in the new batch,
--- then union in the new/updated passing records.
--- Result: exactly one row per account_id (INV-19).
-SELECT * FROM {{ this }}
-WHERE account_id NOT IN (SELECT account_id FROM passing)
-
-UNION ALL
-
+-- Emit passing rows only. The incremental delete+insert strategy on unique_key='account_id'
+-- keeps exactly one row per account_id across all batches (INV-19).
 SELECT * FROM passing

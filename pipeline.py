@@ -377,10 +377,10 @@ def check_silver_accounts_ready(processing_date: str) -> bool:
         return False
     latest_silver = max(silver_acc_successes, key=lambda r: r["completed_at"])
 
-    # Most recent bronze_accounts SUCCESS (any date partition)
+    # Most recent bronze_accounts SUCCESS or SKIPPED (idempotent) entry
     bronze_acc_successes = [
         r for r in log
-        if r["model_name"] == "bronze_accounts" and r["status"] == "SUCCESS"
+        if r["model_name"] == "bronze_accounts" and r["status"] in ("SUCCESS", "SKIPPED")
     ]
     if not bronze_acc_successes:
         return False
@@ -419,13 +419,20 @@ def run_dbt_model(model_name: str, run_id: str, vars: dict) -> bool:
                 logger.error(error_message)
                 raise RuntimeError(error_message)
 
-        # Ensure quarantine partition directory exists (DuckDB COPY TO requires it)
+        # Ensure output directories exist before dbt runs (DuckDB COPY TO requires parent to exist)
         processing_date = vars.get("processing_date")
-        if processing_date and model_name in ("silver_transactions", "silver_accounts"):
+        if model_name == "silver_transaction_codes":
+            os.makedirs(os.path.join(DATA_DIR, "silver", "transaction_codes"), exist_ok=True)
+        elif processing_date and model_name in ("silver_transactions", "silver_accounts"):
             os.makedirs(
                 os.path.join(DATA_DIR, "silver", "quarantine", f"date={processing_date}"),
                 exist_ok=True,
             )
+            if model_name == "silver_transactions":
+                os.makedirs(
+                    os.path.join(DATA_DIR, "silver", "transactions", f"date={processing_date}"),
+                    exist_ok=True,
+                )
 
         # Build dbt vars string: merge caller vars with run_id.
         # json.dumps produces valid JSON which dbt --vars accepts as YAML.
