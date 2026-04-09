@@ -121,4 +121,4 @@ Record the result of each check as **PASS** or **FAIL**. Sign off only when ever
 | All 19 invariants confirmed covered (see table above) | PASS — INV-01–INV-19 |
 | No open items or deferred fixes | PASS |
 
-**Engineer sign-off:** ___________________________  **Date:** ___________
+**Engineer sign-off:** AADHYA SUBHASH  **Date:** 2026-04-09
