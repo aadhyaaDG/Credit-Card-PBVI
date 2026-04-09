@@ -428,6 +428,11 @@ def run_dbt_model(model_name: str, run_id: str, vars: dict) -> bool:
                 os.path.join(DATA_DIR, "silver", "quarantine", f"date={processing_date}"),
                 exist_ok=True,
             )
+            if model_name == "silver_transactions":
+                os.makedirs(
+                    os.path.join(DATA_DIR, "silver", "transactions", f"date={processing_date}"),
+                    exist_ok=True,
+                )
 
         # Build dbt vars string: merge caller vars with run_id.
         # json.dumps produces valid JSON which dbt --vars accepts as YAML.
