@@ -377,10 +377,10 @@ def check_silver_accounts_ready(processing_date: str) -> bool:
         return False
     latest_silver = max(silver_acc_successes, key=lambda r: r["completed_at"])
 
-    # Most recent bronze_accounts SUCCESS (any date partition)
+    # Most recent bronze_accounts SUCCESS or SKIPPED (idempotent) entry
     bronze_acc_successes = [
         r for r in log
-        if r["model_name"] == "bronze_accounts" and r["status"] == "SUCCESS"
+        if r["model_name"] == "bronze_accounts" and r["status"] in ("SUCCESS", "SKIPPED")
     ]
     if not bronze_acc_successes:
         return False
