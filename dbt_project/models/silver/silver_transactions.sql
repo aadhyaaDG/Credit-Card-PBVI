@@ -59,7 +59,7 @@
 
 {% if execute %}
   {% set silver_file_count = run_query(
-      "SELECT COUNT(*) FROM (SELECT unnest(glob('/app/data/silver/transactions/**/data.parquet')) AS f)"
+      "SELECT COUNT(*) FROM glob('/app/data/silver/transactions/**/data.parquet')"
   ).columns[0].values()[0] %}
   {% set has_existing_silver = silver_file_count > 0 %}
 {% else %}
