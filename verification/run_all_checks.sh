@@ -71,18 +71,36 @@ echo "========================================="
 
 check "B-01" "Transactions: bronze_count = source_count for all 7 partitions (INV-05)" "
 SELECT COUNT(*) AS violations FROM (
-    SELECT partition.date_part,
-           (SELECT COUNT(*) FROM read_csv_auto('/app/source/transactions_' || partition.date_part || '.csv'))                            AS source_count,
-           (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date=' || partition.date_part || '/data.parquet'))          AS bronze_count
-    FROM (VALUES $DATES) AS partition(date_part)
+    SELECT (SELECT COUNT(*) FROM read_csv_auto('/app/source/transactions_2024-01-01.csv')) AS source_count, (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date=2024-01-01/data.parquet')) AS bronze_count
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_csv_auto('/app/source/transactions_2024-01-02.csv')), (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date=2024-01-02/data.parquet'))
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_csv_auto('/app/source/transactions_2024-01-03.csv')), (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date=2024-01-03/data.parquet'))
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_csv_auto('/app/source/transactions_2024-01-04.csv')), (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date=2024-01-04/data.parquet'))
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_csv_auto('/app/source/transactions_2024-01-05.csv')), (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date=2024-01-05/data.parquet'))
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_csv_auto('/app/source/transactions_2024-01-06.csv')), (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date=2024-01-06/data.parquet'))
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_csv_auto('/app/source/transactions_2024-01-07.csv')), (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date=2024-01-07/data.parquet'))
 ) WHERE bronze_count != source_count"
 
 check "B-02" "Accounts: bronze_count = source_count for all 7 partitions (INV-05)" "
 SELECT COUNT(*) AS violations FROM (
-    SELECT partition.date_part,
-           (SELECT COUNT(*) FROM read_csv_auto('/app/source/accounts_' || partition.date_part || '.csv'))                               AS source_count,
-           (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/accounts/date=' || partition.date_part || '/data.parquet'))             AS bronze_count
-    FROM (VALUES $DATES) AS partition(date_part)
+    SELECT (SELECT COUNT(*) FROM read_csv_auto('/app/source/accounts_2024-01-01.csv')) AS source_count, (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/accounts/date=2024-01-01/data.parquet')) AS bronze_count
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_csv_auto('/app/source/accounts_2024-01-02.csv')), (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/accounts/date=2024-01-02/data.parquet'))
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_csv_auto('/app/source/accounts_2024-01-03.csv')), (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/accounts/date=2024-01-03/data.parquet'))
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_csv_auto('/app/source/accounts_2024-01-04.csv')), (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/accounts/date=2024-01-04/data.parquet'))
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_csv_auto('/app/source/accounts_2024-01-05.csv')), (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/accounts/date=2024-01-05/data.parquet'))
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_csv_auto('/app/source/accounts_2024-01-06.csv')), (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/accounts/date=2024-01-06/data.parquet'))
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_csv_auto('/app/source/accounts_2024-01-07.csv')), (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/accounts/date=2024-01-07/data.parquet'))
 ) WHERE bronze_count != source_count"
 
 check "B-03" "Transaction codes: bronze_count = source_count (INV-05)" "
@@ -93,20 +111,15 @@ SELECT ABS(
 
 check "B-04" "No null _pipeline_run_id in Bronze transactions, accounts, or transaction_codes (INV-11)" "
 SELECT SUM(null_count) FROM (
-    SELECT (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date=' || p.date_part || '/data.parquet') WHERE _pipeline_run_id IS NULL) AS null_count
-    FROM (VALUES $DATES) AS p(date_part)
+    SELECT COUNT(*) AS null_count FROM read_parquet('/app/data/bronze/transactions/**/data.parquet', hive_partitioning=true) WHERE _pipeline_run_id IS NULL
     UNION ALL
-    SELECT (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/accounts/date=' || p.date_part || '/data.parquet') WHERE _pipeline_run_id IS NULL)
-    FROM (VALUES $DATES) AS p(date_part)
+    SELECT COUNT(*) FROM read_parquet('/app/data/bronze/accounts/**/data.parquet', hive_partitioning=true) WHERE _pipeline_run_id IS NULL
     UNION ALL
     SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transaction_codes/data.parquet') WHERE _pipeline_run_id IS NULL
 )"
 
 check "B-05" "No negative amounts in Bronze transactions (INV-06)" "
-SELECT SUM(neg) FROM (
-    SELECT (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date=' || p.date_part || '/data.parquet') WHERE amount < 0) AS neg
-    FROM (VALUES $DATES) AS p(date_part)
-)"
+SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/**/data.parquet', hive_partitioning=true) WHERE amount < 0"
 
 # ===========================================================================
 # 10.2  SILVER TRANSACTIONS QUALITY
@@ -132,11 +145,19 @@ WHERE _is_resolvable IS NULL"
 
 check "ST-04" "Bronze = Silver + Quarantine per date partition (INV-09)" "
 SELECT COUNT(*) FROM (
-    SELECT partition.date_part,
-           (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date='   || partition.date_part || '/data.parquet'))             AS bronze_count,
-           (SELECT COUNT(*) FROM read_parquet('/app/data/silver/transactions/date='   || partition.date_part || '/data.parquet'))             AS silver_count,
-           (SELECT COUNT(*) FROM read_parquet('/app/data/silver/quarantine/date='     || partition.date_part || '/rejected.parquet'))         AS quarantine_count
-    FROM (VALUES $DATES) AS partition(date_part)
+    SELECT (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date=2024-01-01/data.parquet')) AS bronze_count, (SELECT COUNT(*) FROM read_parquet('/app/data/silver/transactions/date=2024-01-01/data.parquet')) AS silver_count, (SELECT COUNT(*) FROM read_parquet('/app/data/silver/quarantine/date=2024-01-01/rejected.parquet')) AS quarantine_count
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date=2024-01-02/data.parquet')), (SELECT COUNT(*) FROM read_parquet('/app/data/silver/transactions/date=2024-01-02/data.parquet')), (SELECT COUNT(*) FROM read_parquet('/app/data/silver/quarantine/date=2024-01-02/rejected.parquet'))
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date=2024-01-03/data.parquet')), (SELECT COUNT(*) FROM read_parquet('/app/data/silver/transactions/date=2024-01-03/data.parquet')), (SELECT COUNT(*) FROM read_parquet('/app/data/silver/quarantine/date=2024-01-03/rejected.parquet'))
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date=2024-01-04/data.parquet')), (SELECT COUNT(*) FROM read_parquet('/app/data/silver/transactions/date=2024-01-04/data.parquet')), (SELECT COUNT(*) FROM read_parquet('/app/data/silver/quarantine/date=2024-01-04/rejected.parquet'))
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date=2024-01-05/data.parquet')), (SELECT COUNT(*) FROM read_parquet('/app/data/silver/transactions/date=2024-01-05/data.parquet')), (SELECT COUNT(*) FROM read_parquet('/app/data/silver/quarantine/date=2024-01-05/rejected.parquet'))
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date=2024-01-06/data.parquet')), (SELECT COUNT(*) FROM read_parquet('/app/data/silver/transactions/date=2024-01-06/data.parquet')), (SELECT COUNT(*) FROM read_parquet('/app/data/silver/quarantine/date=2024-01-06/rejected.parquet'))
+    UNION ALL
+    SELECT (SELECT COUNT(*) FROM read_parquet('/app/data/bronze/transactions/date=2024-01-07/data.parquet')), (SELECT COUNT(*) FROM read_parquet('/app/data/silver/transactions/date=2024-01-07/data.parquet')), (SELECT COUNT(*) FROM read_parquet('/app/data/silver/quarantine/date=2024-01-07/rejected.parquet'))
 ) WHERE bronze_count != silver_count + quarantine_count"
 
 check "ST-05" "All quarantine rejection_reason values are from exhaustive list (INV-07, INV-08)" "
@@ -192,19 +213,14 @@ SELECT COUNT(*) FROM read_parquet('/app/data/silver/accounts/data.parquet')
 WHERE account_status NOT IN ('ACTIVE','SUSPENDED','CLOSED')"
 
 check "SA-05" "All account quarantine records have a non-null _rejection_reason (INV-08)" "
-SELECT SUM(null_count) FROM (
-    SELECT (SELECT COUNT(*) FROM read_parquet('/app/data/silver/quarantine/date=' || p.date_part || '/rejected.parquet') WHERE _rejection_reason IS NULL) AS null_count
-    FROM (VALUES $DATES) AS p(date_part)
-)"
+SELECT COUNT(*) FROM read_parquet('/app/data/silver/quarantine/**/rejected.parquet', hive_partitioning=true, union_by_name=true) WHERE _rejection_reason IS NULL"
 
 check "SA-06" "Account quarantine rejection_reason from valid list (INV-07, INV-08)" "
-SELECT SUM(bad) FROM (
-    SELECT (
-        SELECT COUNT(*) FROM read_parquet('/app/data/silver/quarantine/date=' || p.date_part || '/rejected.parquet')
-        WHERE _rejection_reason NOT IN ('NULL_REQUIRED_FIELD','INVALID_ACCOUNT_STATUS')
-    ) AS bad
-    FROM (VALUES $DATES) AS p(date_part)
-)"
+SELECT COUNT(*) FROM read_parquet('/app/data/silver/quarantine/**/rejected.parquet', hive_partitioning=true, union_by_name=true)
+WHERE _rejection_reason NOT IN (
+    'NULL_REQUIRED_FIELD','INVALID_AMOUNT','DUPLICATE_TRANSACTION_ID',
+    'INVALID_TRANSACTION_CODE','INVALID_CHANNEL','INVALID_ACCOUNT_STATUS'
+) OR _rejection_reason IS NULL"
 
 # ===========================================================================
 # 10.4  GOLD CORRECTNESS
