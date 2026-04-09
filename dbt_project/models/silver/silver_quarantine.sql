@@ -4,7 +4,7 @@
 
 {% if execute %}
   {% set quarantine_file_count = run_query(
-      "SELECT COUNT(*) FROM (SELECT unnest(glob('/app/data/silver/quarantine/**/rejected.parquet')) AS f)"
+      "SELECT COUNT(*) FROM glob('/app/data/silver/quarantine/**/rejected.parquet')"
   ).columns[0].values()[0] %}
   {% set has_quarantine = quarantine_file_count > 0 %}
 {% else %}
