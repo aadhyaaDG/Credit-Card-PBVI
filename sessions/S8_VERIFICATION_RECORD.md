@@ -7,7 +7,7 @@
 | Engineer | Aadhya Subhash |
 | Branch | session/s08_verification_signoff |
 | Execution Mode | Autonomous |
-| Overall Status | IN PROGRESS |
+| Overall Status | COMPLETE |
 
 ---
 
@@ -39,18 +39,15 @@
 
 | Condition | Must Be True | Result |
 |---|---|---|
-| Bronze completeness | Row counts match source CSVs across all 7 partitions | |
-| Silver quality | Silver + quarantine = Bronze per date; no duplicate transaction_id | |
-| Gold correctness | One row per date in daily_summary; totals match Silver | |
-| Idempotency | Two runs produce identical output | |
-| Audit trail | Every record in every layer has non-null _pipeline_run_id with matching SUCCESS | |
+| Bronze completeness | Row counts match source CSVs across all 7 partitions | PASS |
+| Silver quality | Silver + quarantine = Bronze per date; no duplicate transaction_id | PASS |
+| Gold correctness | One row per date in daily_summary; totals match Silver | PASS |
+| Idempotency | Two runs produce identical output | PASS |
+| Audit trail | Every record in every layer has non-null _pipeline_run_id with matching SUCCESS | PASS |
 
-**Steps:**
-1. `docker compose exec pipeline bash verification/run_all_checks.sh`
-2. Record PASS/FAIL per condition above
-3. Fix any FAILs, re-verify
-4. Sign VERIFICATION_CHECKLIST.md
-5. Update PROJECT_MANIFEST.md
+`docker compose run --rm pipeline bash verification/run_all_checks.sh` → **30/30 PASS**
+
+**Verdict:** [x] All conditions PASS [x] Committed
 
 **Engineer sign-off:** ___________________________  Date: ___________
 
